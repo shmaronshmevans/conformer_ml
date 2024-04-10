@@ -82,6 +82,11 @@ def train_model(data_loader, model, optimizer, device, epoch, loss_func):
 
         # Forward pass and loss computation.
         output = model(X)
+        trans_out = output[1][0]
+        print("x2", trans_out.shape)
+        print(output)
+        print("y", y)
+
         loss = loss_func(output, y)
 
         # Zero the gradients, backward pass, and optimization step.
@@ -221,9 +226,9 @@ def main(EPOCHS, BATCH_SIZE, LEARNING_RATE, CLIM_DIV, forecast_hour, past_timest
 
 main(
     EPOCHS=15,
-    BATCH_SIZE=int(200),
+    BATCH_SIZE=int(10),
     LEARNING_RATE=7e-4,
     CLIM_DIV="Mohawk Valley",
     forecast_hour=4,
-    past_timesteps=120,
+    past_timesteps=122,  # fh+past_timesteps needs to be divisible by the number of stations in the clim_div
 )
