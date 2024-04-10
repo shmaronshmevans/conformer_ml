@@ -1024,37 +1024,56 @@ class Conformer(nn.Module):
             x (torch.Tensor): Input tensor.
 
         Returns:
-            list: List of output tensors (classification outputs).
+            torch.Tensor: Output tensor (classification output) for each station.
         """
         B = x.shape[0]
-        F = x.shape[3]
-        stat_num = x.shape[1]
-        seq = x.shape[2]
+        stations = x.shape[1]
+        seq_length = x.shape[2]
+        features = x.shape[3]
         cls_tokens = self.cls_token.expand(B, -1, -1)
 
-        # changing input to shape [batch, features, stations, seq_length]
-        x = x.permute(0, 3, 1, 2)
-        x = x.repeat(1, 1, int(seq / stat_num), 1)
+        # Initialize empty lists to store classification outputs for each station
+        conv_cls_list = []
+        tran_cls_list = []
 
-        # Stem stage
-        x_base = self.maxpool(self.act1(self.bn1(self.conv1(x))))
+        x_ = x.clone()
 
-        # 1st stage
-        x = self.conv_1(x_base, return_x_2=False)
-        x_t = self.trans_patch_conv(x_base).flatten(2).transpose(1, 2)
-        x_t = torch.cat([cls_tokens, x_t], dim=1)
-        x_t = self.trans_1(x_t)
+        # Process each station separately
+        for s in range(stations):
+            # Extract data for the current station
+            x_station = x_[:, s, :, :].unsqueeze(1)  # Shape: [batch, 1, seq_length, features]
+            #reshape for convolution, [batch, features, station, seq_length]
+            x_station = x_station.permute(0, 3, 1, 2)
+            x_station = x_station.repeat(1, 1, int(seq_length), 1)
 
-        # 2nd to final stages
-        for i in range(2, self.fin_stage):
-            x, x_t = eval("self.conv_trans_" + str(i))(x, x_t)
+            # Stem stage
+            x_base = self.maxpool(self.act1(self.bn1(self.conv1(x_station))))
 
-        # Convolutional classification
-        x_p = self.pooling(x).flatten(1)
-        conv_cls = self.conv_cls_head(x_p)
+            # 1st stage
+            x = self.conv_1(x_base, return_x_2=False)
+            x_t = self.trans_patch_conv(x_base).flatten(2).transpose(1, 2)
+            x_t = torch.cat([cls_tokens, x_t], dim=1)
+            x_t = self.trans_1(x_t)
 
-        # Transformer classification
-        x_t = self.trans_norm(x_t)
-        tran_cls = self.trans_cls_head(x_t[:, 0])
+            # 2nd to final stages
+            for i in range(2, self.fin_stage):
+                x, x_t = eval("self.conv_trans_" + str(i))(x, x_t)
 
-        return [conv_cls, tran_cls]
+            # Convolutional classification
+            x_p = self.pooling(x).flatten(1)
+            conv_cls = self.conv_cls_head(x_p)
+
+            # Transformer classification
+            x_t = self.trans_norm(x_t)
+            tran_cls = self.trans_cls_head(x_t[:, 0])
+
+            # Append classification outputs for the current station to the lists
+            conv_cls_list.append(conv_cls)
+            tran_cls_list.append(tran_cls)
+
+        # Concatenate classification outputs along the station dimension
+        conv_cls = torch.stack(conv_cls_list, dim=2)  # Shape: [batch, features, stations, output_size]
+        tran_cls = torch.stack(tran_cls_list, dim=2)  # Shape: [batch, output_size, stations]
+
+        return conv_cls, tran_cls
+

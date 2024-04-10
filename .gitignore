@@ -1,0 +1,7 @@
+builds
+data
+__pycache__
+*.csv
+*.parquet
+*.sh
+*.png

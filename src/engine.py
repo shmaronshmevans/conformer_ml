@@ -82,10 +82,11 @@ def train_model(data_loader, model, optimizer, device, epoch, loss_func):
 
         # Forward pass and loss computation.
         output = model(X)
-        trans_out = output[1][0]
-        print("x2", trans_out.shape)
-        print(output)
-        print("y", y)
+        print("output1")
+        print(output[0].shape)
+        print("output2")
+        print(output[1].shape)
+        print("y", y.shape)
 
         loss = loss_func(output, y)
 
