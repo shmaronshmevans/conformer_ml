@@ -1,0 +1,1 @@
+This will repo will serve for conformer machine learing code to predict NWP error using the New York State Mesonet
