@@ -4,7 +4,7 @@
 #SBATCH --account=ai2es
 #SBATCH --qos=long
 #SBATCH --time=96:00:00
-#SBATCH --partition=a100
+#SBATCH --partition=a6000
 #SBATCH --cpus-per-task=20
 #SBATCH --mem=300G
 #SBATCH --gpus-per-node=1

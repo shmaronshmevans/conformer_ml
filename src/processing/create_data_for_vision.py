@@ -42,7 +42,7 @@ def columns_drop(df):
     return df
 
 
-def create_data_for_model(clim_div, today_date, forecast_hour):
+def create_data_for_model(clim_div, today_date, forecast_hour, single):
     """
     This function creates and processes data for a vision transformer machine learning model.
 
@@ -59,11 +59,15 @@ def create_data_for_model(clim_div, today_date, forecast_hour):
     # load hrrr data
     hrrr_df = hrrr_data.read_hrrr_data(forecast_hour)
 
-    # Filter data by NY climate division
-    nysm_cats_path = "/home/aevans/nwp_bias/src/landtype/data/nysm.csv"
-    nysm_cats_df = pd.read_csv(nysm_cats_path)
-    nysm_cats_df = nysm_cats_df[nysm_cats_df["climate_division_name"] == clim_div]
-    stations = nysm_cats_df["stid"].tolist()
+    if single == True:
+        stations = [clim_div]
+    else:
+        # Filter data by NY climate division
+        nysm_cats_path = "/home/aevans/nwp_bias/src/landtype/data/nysm.csv"
+        nysm_cats_df = pd.read_csv(nysm_cats_path)
+        nysm_cats_df = nysm_cats_df[nysm_cats_df["climate_division_name"] == clim_div]
+        stations = nysm_cats_df["stid"].tolist()
+        
     nysm_df = nysm_df[nysm_df["station"].isin(stations)]
     hrrr_df = hrrr_df[hrrr_df["station"].isin(stations)]
 

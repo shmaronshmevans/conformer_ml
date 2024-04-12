@@ -1,5 +1,10 @@
 import model2
 
+#comet
+from comet_ml import Experiment, Artifact
+from comet_ml.integration.pytorch import log_model
+
+#pytorch
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -7,7 +12,7 @@ from functools import partial
 from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
 
-
+# dependencies
 from processing import create_data_for_vision
 from processing import save_output
 from processing import get_time_title
@@ -16,7 +21,7 @@ import gc
 
 class MultiStationDataset(Dataset):
     def __init__(
-        self, dataframes, target, features, past_steps, future_steps, nysm_vars=12
+        self, dataframes, target, features, past_steps, future_steps, nysm_vars=14
     ):
         """
         dataframes: list of station dataframes like in the SequenceDataset
@@ -64,10 +69,27 @@ class MultiStationDataset(Dataset):
                 for dataframe in self.dataframes
             ]
         ).to(torch.float32)
-        # this is (batch, stations, future_steps)
-        x[-self.future_steps :, : self.nysm_vars] = (
-            -999.0
-        )  # check that this is setting the right positions to this value
+        
+        # this is (stations, seq_len, features)
+        x[:, -self.future_steps:, -self.nysm_vars:] = -999.0  # check that this is setting the right positions to this value
+
+        # # Fetch the previous timestep x_t
+        # if i > 0:
+        #     x_t = torch.stack(
+        #         [
+        #             torch.tensor(
+        #                 dataframe[self.features].values[
+        #                     (i - 1) : (i + self.past_steps + self.future_steps - 1)
+        #                 ]
+        #             )
+        #             for dataframe in self.dataframes
+        #         ]
+        #     ).to(torch.float32)
+        #     x_t[:, -self.future_steps:, -self.nysm_vars:] = -999.0
+        # else:
+        #     # If i is 0, there's no previous timestep
+        #     x_t = torch.zeros_like(x)
+
         return x, y
 
 
@@ -81,14 +103,11 @@ def train_model(data_loader, model, optimizer, device, epoch, loss_func):
         X, y = X.to(device), y.to(device)
 
         # Forward pass and loss computation.
+        #output[0] = convolution
+        #output[1] = transformer
         output = model(X)
-        print("output1")
-        print(output[0].shape)
-        print("output2")
-        print(output[1].shape)
-        print("y", y.shape)
 
-        loss = loss_func(output, y)
+        loss = loss_func(output[1], y[:,:,-1])
 
         # Zero the gradients, backward pass, and optimization step.
         optimizer.zero_grad()
@@ -126,7 +145,7 @@ def test_model(data_loader, model, device, epoch, loss_func):
         # Forward pass to obtain model predictions.
         output = model(X)
         # Compute loss and add it to the total loss.
-        total_loss += loss_func(output, y).item()
+        total_loss += loss_func(output[1], y[:,:,-1]).item()
         gc.collect()
 
     # Calculate the average test loss.
@@ -136,12 +155,12 @@ def test_model(data_loader, model, device, epoch, loss_func):
     return avg_loss
 
 
-def main(EPOCHS, BATCH_SIZE, LEARNING_RATE, CLIM_DIV, forecast_hour, past_timesteps):
-    # experiment = Experiment(
-    #     api_key="leAiWyR5Ck7tkdiHIT7n6QWNa",
-    #     project_name="conformer_beta",
-    #     workspace="shmaronshmevans",
-    # )
+def main(EPOCHS, BATCH_SIZE, LEARNING_RATE, CLIM_DIV, forecast_hour, past_timesteps, single):
+    experiment = Experiment(
+        api_key="leAiWyR5Ck7tkdiHIT7n6QWNa",
+        project_name="conformer_beta",
+        workspace="shmaronshmevans",
+    )
     torch.manual_seed(101)
 
     # Use GPU if available
@@ -151,7 +170,7 @@ def main(EPOCHS, BATCH_SIZE, LEARNING_RATE, CLIM_DIV, forecast_hour, past_timest
     # create data
     df_train_ls, df_test_ls, features, stations = (
         create_data_for_vision.create_data_for_model(
-            CLIM_DIV, today_date, forecast_hour
+            CLIM_DIV, today_date, forecast_hour, single
         )
     )
 
@@ -193,6 +212,8 @@ def main(EPOCHS, BATCH_SIZE, LEARNING_RATE, CLIM_DIV, forecast_hour, past_timest
         "learning_rate": LEARNING_RATE,
         "batch_size": BATCH_SIZE,
         "clim_div": str(CLIM_DIV),
+        "forecast_hr": forecast_hour,
+        "seq_length": int(forecast_hour+past_timesteps)
     }
     # early_stopper = EarlyStopper(20)
 
@@ -203,10 +224,10 @@ def main(EPOCHS, BATCH_SIZE, LEARNING_RATE, CLIM_DIV, forecast_hour, past_timest
         )
         test_loss = test_model(test_loader, ml, device, ix_epoch, loss_func)
         print()
-        # experiment.set_epoch(ix_epoch)
-        # experiment.log_metric("test_loss", test_loss)
-        # experiment.log_metric("train_loss", train_loss)
-        # experiment.log_metrics(hyper_params, epoch=ix_epoch)
+        experiment.set_epoch(ix_epoch)
+        experiment.log_metric("test_loss", test_loss)
+        experiment.log_metric("train_loss", train_loss)
+        experiment.log_metrics(hyper_params, epoch=ix_epoch)
         # if early_stopper.early_stop(test_loss):
         #     print(f"Early stopping at epoch {ix_epoch}")
         #     break
@@ -222,14 +243,15 @@ def main(EPOCHS, BATCH_SIZE, LEARNING_RATE, CLIM_DIV, forecast_hour, past_timest
         today_date,
         CLIM_DIV,
     )
-    # experiment.end()
+    experiment.end()
 
 
 main(
     EPOCHS=15,
-    BATCH_SIZE=int(10),
+    BATCH_SIZE=int(3),
     LEARNING_RATE=7e-4,
     CLIM_DIV="Mohawk Valley",
     forecast_hour=4,
     past_timesteps=122,  # fh+past_timesteps needs to be divisible by the number of stations in the clim_div
+    single=False,
 )

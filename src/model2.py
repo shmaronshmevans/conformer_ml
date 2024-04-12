@@ -22,9 +22,7 @@ from functools import partial
 from typing import Any, Callable, Dict, List, NamedTuple, Optional
 from processing import drop_path, trunc_normal_
 
-
-import torch
-import torch.nn as nn
+import numpy as np
 
 class Mlp(nn.Module):
     def __init__(
@@ -92,10 +90,6 @@ class Mlp(nn.Module):
         
         return x
 
-
-
-import torch
-import torch.nn as nn
 
 class Attention(nn.Module):
     def __init__(
@@ -168,10 +162,6 @@ class Attention(nn.Module):
         x = self.proj_drop(x)
         
         return x
-
-import torch
-import torch.nn as nn
-from functools import partial
 
 class Block(nn.Module):
     def __init__(
@@ -351,6 +341,7 @@ class ConvBlock(nn.Module):
         if self.drop_block is not None:
             x = self.drop_block(x)
         x = self.act1(x)
+
         # Second convolutional layer
         x = self.conv2(x) if x_t is None else self.conv2(x + x_t)
         x = self.bn2(x)
@@ -389,6 +380,7 @@ class FCUDown(nn.Module):
         inplanes,
         outplanes,
         dw_stride,
+        stations,
         act_layer=nn.GELU,
         norm_layer=partial(nn.LayerNorm, eps=1e-6),
     ):
@@ -404,6 +396,7 @@ class FCUDown(nn.Module):
 
         """
         super(FCUDown, self).__init__()
+        self.stations = stations
         self.dw_stride = dw_stride
 
         # Projection convolutional layer
@@ -433,8 +426,9 @@ class FCUDown(nn.Module):
         x = self.sample_pooling(x).flatten(2).transpose(1, 2)
         x = self.ln(x)
         x = self.act(x)
+
         # Concatenate with tensor from previous time step
-        x = torch.cat([x_t[:, 0][:, None, :], x], dim=1)
+        x = torch.cat([x_t[:, :self.stations][:, None, :].squeeze(1), x], dim=1)
 
         return x
 
@@ -447,6 +441,7 @@ class FCUUp(nn.Module):
         inplanes,
         outplanes,
         up_stride,
+        stations,
         act_layer=nn.ReLU,
         norm_layer=partial(nn.BatchNorm2d, eps=1e-6),
     ):
@@ -464,6 +459,7 @@ class FCUUp(nn.Module):
         super(FCUUp, self).__init__()
 
         self.up_stride = up_stride
+        self.stations = stations
         self.conv_project = nn.Conv2d(
             inplanes, outplanes, kernel_size=1, stride=1, padding=0
         )
@@ -486,7 +482,8 @@ class FCUUp(nn.Module):
         # this is a difference between original model and mine ***
         B, _, C = x.shape
         # Reshape the tensor
-        x_r = x[:, 1:].transpose(1, 2).reshape(B, C, H, W)
+
+        x_r = x[:, self.stations:].transpose(1, 2).reshape(B, C, H, W)
         x_r = self.act(self.bn(self.conv_project(x_r)))
         # Upsample the tensor
         return F.interpolate(x_r, size=(H * self.up_stride, W * self.up_stride))
@@ -657,7 +654,6 @@ class ConvTransBlock(nn.Module):
 
         """
         super(ConvTransBlock, self).__init__()
-
         expansion = 4
         # CNN block
         self.cnn_block = ConvBlock(
@@ -692,12 +688,12 @@ class ConvTransBlock(nn.Module):
 
         # Squeeze block
         self.squeeze_block = FCUDown(
-            inplanes=outplanes // expansion, outplanes=embed_dim, dw_stride=dw_stride
+            inplanes=outplanes // expansion, outplanes=embed_dim, dw_stride=dw_stride, stations = stations
         )
 
         # Expand block
         self.expand_block = FCUUp(
-            inplanes=embed_dim, outplanes=outplanes // expansion, up_stride=dw_stride
+            inplanes=embed_dim, outplanes=outplanes // expansion, up_stride=dw_stride, stations = stations
         )
 
         # Transformer block
@@ -711,21 +707,6 @@ class ConvTransBlock(nn.Module):
             attn_drop=attention_dropout,
             drop_path=drop_path_rate,
         )
-        #
-        # VisionTransformer(
-        #     stations=stations,
-        #     past_timesteps=past_timesteps,
-        #     future_timesteps=forecast_hour,
-        #     num_vars=in_chans,
-        #     pos_embedding=pos_embedding,
-        #     num_layers=num_heads,
-        #     num_heads=12,
-        #     hidden_dim=768,
-        #     mlp_dim=3072,
-        #     num_classes=1,
-        #     dropout=dropout,
-        #     attention_dropout=attention_dropout,
-        # )
 
         self.dw_stride = dw_stride
         self.embed_dim = embed_dim
@@ -828,7 +809,7 @@ class Conformer(nn.Module):
         assert depth % 3 == 0
 
         # Learnable class token
-        self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
+        self.cls_token = nn.Parameter(torch.zeros(stations, 1, embed_dim))
         self.trans_dpr = [
             x.item() for x in torch.linspace(0, drop_path_rate, depth)
         ]  # Stochastic depth decay rule
@@ -839,7 +820,7 @@ class Conformer(nn.Module):
             nn.Linear(embed_dim, num_classes) if num_classes > 0 else nn.Identity()
         )
         self.pooling = nn.AdaptiveAvgPool2d(1)
-        self.conv_cls_head = nn.Linear(int(256 * 48), num_classes)
+        self.conv_cls_head = nn.Linear(int(256 * 48), stations)
 
         # Stem stage: Get the feature maps by convolution block
         self.conv1 = nn.Conv2d(
@@ -873,13 +854,6 @@ class Conformer(nn.Module):
             attn_drop=attention_dropout,
             drop_path=self.trans_dpr[0],
         )
-        # EncoderBlock(
-        #     num_heads=num_heads,
-        #     hidden_dim=embed_dim,
-        #     mlp_dim=768,
-        #     dropout=0.0,
-        #     attention_dropout=0.0
-        # )
 
         # 2~4 stages
         init_stage = 2
@@ -1016,7 +990,7 @@ class Conformer(nn.Module):
         """
         return {"cls_token"}
 
-    def forward(self, x):
+    def forward(self, x, x_t=None):
         """
         Forward pass of the model.
 
@@ -1030,50 +1004,52 @@ class Conformer(nn.Module):
         stations = x.shape[1]
         seq_length = x.shape[2]
         features = x.shape[3]
-        cls_tokens = self.cls_token.expand(B, -1, -1)
 
-        # Initialize empty lists to store classification outputs for each station
-        conv_cls_list = []
-        tran_cls_list = []
+        # # Check if sequence length is divisible by the number of stations
+        # assert(torch.remainder(seq_length, stations).item() == 0, f"Sequence length should be divisible by the number of stations")
 
-        x_ = x.clone()
+        cls_tokens = self.cls_token.expand(-1, B, -1).transpose(0, 1)  # [batch_size, stations, features]
 
-        # Process each station separately
-        for s in range(stations):
-            # Extract data for the current station
-            x_station = x_[:, s, :, :].unsqueeze(1)  # Shape: [batch, 1, seq_length, features]
-            #reshape for convolution, [batch, features, station, seq_length]
-            x_station = x_station.permute(0, 3, 1, 2)
-            x_station = x_station.repeat(1, 1, int(seq_length), 1)
+        # Concatenate class tokens with feature embeddings
 
-            # Stem stage
-            x_base = self.maxpool(self.act1(self.bn1(self.conv1(x_station))))
+        #reshape for convolution, [batch, features, station, seq_length]
+        x_station = x.permute(0, 3, 1, 2)
+        # x_t0 = x_t.permute(0,3,1,2)
+        x_station = x_station.repeat(1, 1, int(seq_length/stations), 1)
+        # x_t0 = x_t0.repeat(1, 1, int(seq_length/stations), 1)
 
-            # 1st stage
-            x = self.conv_1(x_base, return_x_2=False)
-            x_t = self.trans_patch_conv(x_base).flatten(2).transpose(1, 2)
-            x_t = torch.cat([cls_tokens, x_t], dim=1)
-            x_t = self.trans_1(x_t)
+        # Stem stage
+        x_base = self.maxpool(self.act1(self.bn1(self.conv1(x_station))))
+        # x_base_t = self.maxpool(self.act1(self.bn1(self.conv1(x_t0))))
 
-            # 2nd to final stages
-            for i in range(2, self.fin_stage):
-                x, x_t = eval("self.conv_trans_" + str(i))(x, x_t)
+        # 1st stage
+        x = self.conv_1(x_base, return_x_2=False)
+        x_t = self.trans_patch_conv(x_base).flatten(2).transpose(1, 2)
+        x_t = torch.cat([cls_tokens, x_t], dim=1)
+        x_t = self.trans_1(x_t)
 
-            # Convolutional classification
-            x_p = self.pooling(x).flatten(1)
-            conv_cls = self.conv_cls_head(x_p)
+        print("xt", x_t.shape)
+        print("x", x.shape)
 
-            # Transformer classification
+        # 2nd to final stages
+        for i in range(2, self.fin_stage):
+            # Access the layer by name
+            layer = getattr(self, f"conv_trans_{i}")
+            # Call the layer with the current `x` and `x_t`
+            x, x_t = layer(x, x_t)
+
+
+        # Convolutional classification
+        x_p = self.pooling(x).flatten(1)
+        conv_cls = self.conv_cls_head(x_p)
+
+        # Transformer classification
+        tran_cls_ls = []
+        for s in np.arange(1,stations+1):
+            s=(s+1)
             x_t = self.trans_norm(x_t)
-            tran_cls = self.trans_cls_head(x_t[:, 0])
+            tran_cls = self.trans_cls_head(x_t[:, -s, :])
+            tran_cls_ls.append(tran_cls[:,0])
+        tran_cls_ls = torch.stack(tran_cls_ls).permute(1,0)
 
-            # Append classification outputs for the current station to the lists
-            conv_cls_list.append(conv_cls)
-            tran_cls_list.append(tran_cls)
-
-        # Concatenate classification outputs along the station dimension
-        conv_cls = torch.stack(conv_cls_list, dim=2)  # Shape: [batch, features, stations, output_size]
-        tran_cls = torch.stack(tran_cls_list, dim=2)  # Shape: [batch, output_size, stations]
-
-        return conv_cls, tran_cls
-
+        return conv_cls, tran_cls_ls
