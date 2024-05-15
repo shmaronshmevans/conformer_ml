@@ -1,10 +1,10 @@
 import model2
 
-#comet
+# comet
 from comet_ml import Experiment, Artifact
 from comet_ml.integration.pytorch import log_model
 
-#pytorch
+# pytorch
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -69,9 +69,11 @@ class MultiStationDataset(Dataset):
                 for dataframe in self.dataframes
             ]
         ).to(torch.float32)
-        
+
         # this is (stations, seq_len, features)
-        x[:, -self.future_steps:, -self.nysm_vars:] = -999.0  # check that this is setting the right positions to this value
+        x[:, -self.future_steps :, -self.nysm_vars :] = (
+            -999.0
+        )  # check that this is setting the right positions to this value
 
         # # Fetch the previous timestep x_t
         # if i > 0:
@@ -97,30 +99,27 @@ def train_model(data_loader, model, optimizer, device, epoch, loss_func):
     num_batches = len(data_loader)
     total_loss = 0
     model.train()
+    accum = 32
 
     for batch_idx, (X, y) in enumerate(data_loader):
         # Move data and labels to the appropriate device (GPU/CPU).
         X, y = X.to(device), y.to(device)
 
         # Forward pass and loss computation.
-        #output[0] = convolution
-        #output[1] = transformer
+        # output[0] = convolution
+        # output[1] = transformer
         output = model(X)
 
-        loss = loss_func(output[1], y[:,:,-1])
-
-        # Zero the gradients, backward pass, and optimization step.
-        optimizer.zero_grad()
+        loss = loss_func(output[1], y[:, :, -1])
+        loss = loss / accum
         loss.backward()
-        # torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-        optimizer.step()
+        if (batch_idx + 1) % accum == 0:
+            optimizer.step()
+            optimizer.zero_grad()
 
         # Track the total loss and the number of processed samples.
         total_loss += loss.item()
         gc.collect()
-
-    # Synchronize and aggregate losses in distributed training.
-    # dist.all_reduce(ddp_loss, op=dist.ReduceOp.SUM)
 
     # Compute the average loss for the current epoch.
     avg_loss = total_loss / num_batches
@@ -145,7 +144,7 @@ def test_model(data_loader, model, device, epoch, loss_func):
         # Forward pass to obtain model predictions.
         output = model(X)
         # Compute loss and add it to the total loss.
-        total_loss += loss_func(output[1], y[:,:,-1]).item()
+        total_loss += loss_func(output[1], y[:, :, -1]).item()
         gc.collect()
 
     # Calculate the average test loss.
@@ -155,7 +154,9 @@ def test_model(data_loader, model, device, epoch, loss_func):
     return avg_loss
 
 
-def main(EPOCHS, BATCH_SIZE, LEARNING_RATE, CLIM_DIV, forecast_hour, past_timesteps, single):
+def main(
+    EPOCHS, BATCH_SIZE, LEARNING_RATE, CLIM_DIV, forecast_hour, past_timesteps, single
+):
     experiment = Experiment(
         api_key="leAiWyR5Ck7tkdiHIT7n6QWNa",
         project_name="conformer_beta",
@@ -190,7 +191,7 @@ def main(EPOCHS, BATCH_SIZE, LEARNING_RATE, CLIM_DIV, forecast_hour, past_timest
         past_timesteps=past_timesteps,
         forecast_hour=forecast_hour,
         pos_embedding=0.65,
-        num_layers=2,
+        num_layers=1,
     )
     if torch.cuda.is_available():
         ml.cuda()
@@ -213,7 +214,7 @@ def main(EPOCHS, BATCH_SIZE, LEARNING_RATE, CLIM_DIV, forecast_hour, past_timest
         "batch_size": BATCH_SIZE,
         "clim_div": str(CLIM_DIV),
         "forecast_hr": forecast_hour,
-        "seq_length": int(forecast_hour+past_timesteps)
+        "seq_length": int(forecast_hour + past_timesteps),
     }
     # early_stopper = EarlyStopper(20)
 
@@ -247,11 +248,11 @@ def main(EPOCHS, BATCH_SIZE, LEARNING_RATE, CLIM_DIV, forecast_hour, past_timest
 
 
 main(
-    EPOCHS=15,
-    BATCH_SIZE=int(3),
+    EPOCHS=5,
+    BATCH_SIZE=int(5),
     LEARNING_RATE=7e-4,
     CLIM_DIV="Mohawk Valley",
     forecast_hour=4,
-    past_timesteps=122,  # fh+past_timesteps needs to be divisible by the number of stations in the clim_div
+    past_timesteps=32,  # fh+past_timesteps needs to be divisible by the number of stations in the clim_div,
     single=False,
 )

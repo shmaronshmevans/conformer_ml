@@ -23,15 +23,17 @@ from typing import Any, Callable, Dict, List, NamedTuple, Optional
 from processing import drop_path, trunc_normal_
 
 import numpy as np
+import gc
+
 
 class Mlp(nn.Module):
     def __init__(
         self,
-        in_features,           # Number of input features
-        hidden_features=None, # Number of hidden features in the MLP
-        out_features=None,    # Number of output features
-        act_layer=nn.GELU,    # Activation function used in the MLP
-        drop=0.0,             # Dropout probability
+        in_features,  # Number of input features
+        hidden_features=None,  # Number of hidden features in the MLP
+        out_features=None,  # Number of output features
+        act_layer=nn.GELU,  # Activation function used in the MLP
+        drop=0.0,  # Dropout probability
     ):
         """
         Multi-Layer Perceptron (MLP) module.
@@ -45,20 +47,20 @@ class Mlp(nn.Module):
 
         """
         super().__init__()
-        
+
         # If out_features or hidden_features are not specified, default to in_features
         out_features = out_features or in_features
         hidden_features = hidden_features or in_features
-        
+
         # Define the first fully connected layer
         self.fc1 = nn.Linear(in_features, hidden_features)
-        
+
         # Activation function used between the layers
         self.act = act_layer()
-        
+
         # Define the second fully connected layer
         self.fc2 = nn.Linear(hidden_features, out_features)
-        
+
         # Dropout layer with specified dropout probability
         self.drop = nn.Dropout(drop)
 
@@ -75,19 +77,19 @@ class Mlp(nn.Module):
         """
         # Pass input through the first fully connected layer
         x = self.fc1(x)
-        
+
         # Apply activation function
         x = self.act(x)
-        
+
         # Apply dropout
         x = self.drop(x)
-        
+
         # Pass through the second fully connected layer
         x = self.fc2(x)
-        
+
         # Apply dropout again
         x = self.drop(x)
-        
+
         return x
 
 
@@ -116,17 +118,17 @@ class Attention(nn.Module):
         self.num_heads = num_heads
         # Calculate dimensionality of each attention head
         head_dim = dim // num_heads
-        
+
         # Set scale factor for query and key
         self.scale = qk_scale or head_dim**-0.5
 
         # Linear transformation layers for query, key, and value
         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
-        
+
         # Dropout layers
         self.attn_drop = nn.Dropout(attn_drop)
         self.proj_drop = nn.Dropout(proj_drop)
-        
+
         # Linear transformation layer for projecting output tensor
         self.proj = nn.Linear(dim, dim)
 
@@ -142,26 +144,31 @@ class Attention(nn.Module):
         """
         # Extract batch size (B), sequence length (N), and input dimension (C)
         B, N, C = x.shape
-        
+
         # Linear transformation for query, key, and value, and reshape
-        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
+        qkv = (
+            self.qkv(x)
+            .reshape(B, N, 3, self.num_heads, C // self.num_heads)
+            .permute(2, 0, 3, 1, 4)
+        )
         q, k, v = qkv[0], qkv[1], qkv[2]  # Split into query, key, and value
 
         # Calculate attention scores
         attn = (q @ k.transpose(-2, -1)) * self.scale
-        
+
         # Apply softmax to get attention weights and apply dropout
         attn = attn.softmax(dim=-1)
         attn = self.attn_drop(attn)
 
         # Weighted sum of values (attention mechanism)
         x = (attn @ v).transpose(1, 2).reshape(B, N, C)
-        
+
         # Project output tensor and apply dropout
         x = self.proj(x)
         x = self.proj_drop(x)
-        
+
         return x
+
 
 class Block(nn.Module):
     def __init__(
@@ -193,10 +200,10 @@ class Block(nn.Module):
             norm_layer (Callable[..., torch.nn.Module], optional): Normalization layer. Defaults to partial(nn.LayerNorm, eps=1e-6).
         """
         super().__init__()
-        
+
         # Layer normalization for the input features
         self.norm1 = norm_layer(dim)
-        
+
         # Multi-head self-attention mechanism
         self.attn = Attention(
             dim,
@@ -206,13 +213,13 @@ class Block(nn.Module):
             attn_drop=attn_drop,
             proj_drop=drop,
         )
-        
+
         # Drop path for stochastic depth
         self.drop_path = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
-        
+
         # Layer normalization for the output of attention mechanism
         self.norm2 = norm_layer(dim)
-        
+
         # MLP module
         mlp_hidden_dim = int(dim * mlp_ratio)
         self.mlp = Mlp(
@@ -234,12 +241,11 @@ class Block(nn.Module):
         """
         # Pass input through layer normalization, attention mechanism, and apply drop path
         x = x + self.drop_path(self.attn(self.norm1(x)))
-        
+
         # Pass output through layer normalization, MLP, and apply drop path
         x = x + self.drop_path(self.mlp(self.norm2(x)))
-        
-        return x
 
+        return x
 
 
 class ConvBlock(nn.Module):
@@ -428,7 +434,7 @@ class FCUDown(nn.Module):
         x = self.act(x)
 
         # Concatenate with tensor from previous time step
-        x = torch.cat([x_t[:, :self.stations][:, None, :].squeeze(1), x], dim=1)
+        x = torch.cat([x_t[:, : self.stations][:, None, :].squeeze(1), x], dim=1)
 
         return x
 
@@ -481,9 +487,8 @@ class FCUUp(nn.Module):
         """
         # this is a difference between original model and mine ***
         B, _, C = x.shape
-        # Reshape the tensor
 
-        x_r = x[:, self.stations:].transpose(1, 2).reshape(B, C, H, W)
+        x_r = x[:, self.stations :].transpose(1, 2).reshape(B, C, H, W)
         x_r = self.act(self.bn(self.conv_project(x_r)))
         # Upsample the tensor
         return F.interpolate(x_r, size=(H * self.up_stride, W * self.up_stride))
@@ -688,12 +693,18 @@ class ConvTransBlock(nn.Module):
 
         # Squeeze block
         self.squeeze_block = FCUDown(
-            inplanes=outplanes // expansion, outplanes=embed_dim, dw_stride=dw_stride, stations = stations
+            inplanes=outplanes // expansion,
+            outplanes=embed_dim,
+            dw_stride=dw_stride,
+            stations=stations,
         )
 
         # Expand block
         self.expand_block = FCUUp(
-            inplanes=embed_dim, outplanes=outplanes // expansion, up_stride=dw_stride, stations = stations
+            inplanes=embed_dim,
+            outplanes=outplanes // expansion,
+            up_stride=dw_stride,
+            stations=stations,
         )
 
         # Transformer block
@@ -732,6 +743,7 @@ class ConvTransBlock(nn.Module):
 
         # Squeeze block forward pass
         x_st = self.squeeze_block(x2, x_t)
+        x_t = adjust_tensor_shape(x_t, x_st.shape[1], 1)
 
         # Transformer block forward pass
         x_t = self.trans_block(x_st + x_t)
@@ -744,11 +756,64 @@ class ConvTransBlock(nn.Module):
         # Expand block forward pass
         x_t_r = self.expand_block(x_t, H // self.dw_stride, W // self.dw_stride)
 
-
         # Fusion block forward pass
+        # pad x_t_r to be compatible with x
+        x_t_r = adjust_tensor_shape(x_t_r, x.shape[2], 3)
+        x_t_r = adjust_tensor_shape(x_t_r, x.shape[2], 2)
         x = self.fusion_block(x, x_t_r, return_x_2=False)
 
         return x, x_t
+
+
+# def adjust_tensor_shape(x_t, shape, dimension):
+#     """
+#     Adjusts the shape of tensor x_t to ensure that its first dimension equals 12.
+
+#     Args:
+#     - x: torch.Tensor, input tensor
+#     - x_t: torch.Tensor, target tensor
+
+#     Returns:
+#     - Adjusted tensor x_t
+#     """
+#     current_dim = x_t.size(1)
+#     if current_dim < 12:
+#         # Calculate the amount needed to pad x_t's first dimension
+#         pad_size = 12 - current_dim
+#         # Pad x_t's first dimension to make it equal to 12
+#         x_t = torch.nn.functional.pad(x_t, (0, 0, 0, pad_size))
+#     return x_t
+
+
+def adjust_tensor_shape(x_t, shape, dimension):
+    """
+    Adjusts the shape of tensor x_t along the specified dimension.
+
+    Args:
+    - x_t: torch.Tensor, input tensor
+    - shape: int, target shape along the specified dimension
+    - dimension: int, dimension along which to adjust the shape
+
+    Returns:
+    - Adjusted tensor x_t
+    """
+    current_dim = x_t.size(dimension)
+    if current_dim < shape:
+        # Calculate the amount needed to pad x_t along the specified dimension
+        pad_size = shape - current_dim
+
+        # Initialize padding for all dimensions as zero
+        padding = [0] * (2 * x_t.dim())
+
+        # Adjust padding for the specified dimension (padding before and after the dimension)
+        padding_index = 2 * (x_t.dim() - dimension - 1)
+        padding[padding_index] = pad_size  # Pad after the dimension
+        # padding[padding_index + 1] = pad_size  # Uncomment to pad both sides
+
+        # Apply padding to the tensor
+        x_t = torch.nn.functional.pad(x_t, padding)
+
+    return x_t
 
 
 class Conformer(nn.Module):
@@ -765,8 +830,8 @@ class Conformer(nn.Module):
         forecast_hour,
         pos_embedding,
         num_layers,
-        num_classes=0, # set to 0 to do regression task
-        base_channel=768,  
+        num_classes=0,  # set to 0 to do regression task
+        base_channel=768,
         channel_ratio=4,
         num_med_block=0,
         embed_dim=768,
@@ -1006,16 +1071,22 @@ class Conformer(nn.Module):
         features = x.shape[3]
 
         # # Check if sequence length is divisible by the number of stations
-        # assert(torch.remainder(seq_length, stations).item() == 0, f"Sequence length should be divisible by the number of stations")
+        if seq_length % stations != 0:
+            suggested_seq_length = (seq_length // stations + 1) * stations
+            raise ValueError(
+                f"Sequence length should be divisible by the number of stations. Suggested sequence length: {suggested_seq_length.item()}"
+            )
 
-        cls_tokens = self.cls_token.expand(-1, B, -1).transpose(0, 1)  # [batch_size, stations, features]
+        cls_tokens = self.cls_token.expand(-1, B, -1).transpose(
+            0, 1
+        )  # [batch_size, stations, features]
 
         # Concatenate class tokens with feature embeddings
 
-        #reshape for convolution, [batch, features, station, seq_length]
+        # reshape for convolution, [batch, features, station, seq_length]
         x_station = x.permute(0, 3, 1, 2)
         # x_t0 = x_t.permute(0,3,1,2)
-        x_station = x_station.repeat(1, 1, int(seq_length/stations), 1)
+        x_station = x_station.repeat(1, 1, int(seq_length / stations), 1)
         # x_t0 = x_t0.repeat(1, 1, int(seq_length/stations), 1)
 
         # Stem stage
@@ -1028,28 +1099,28 @@ class Conformer(nn.Module):
         x_t = torch.cat([cls_tokens, x_t], dim=1)
         x_t = self.trans_1(x_t)
 
-        print("xt", x_t.shape)
-        print("x", x.shape)
-
         # 2nd to final stages
         for i in range(2, self.fin_stage):
             # Access the layer by name
             layer = getattr(self, f"conv_trans_{i}")
             # Call the layer with the current `x` and `x_t`
             x, x_t = layer(x, x_t)
-
+            gc.collect()
 
         # Convolutional classification
         x_p = self.pooling(x).flatten(1)
         conv_cls = self.conv_cls_head(x_p)
+        gc.collect()
 
         # Transformer classification
         tran_cls_ls = []
-        for s in np.arange(1,stations+1):
-            s=(s+1)
+        for s in np.arange(1, stations + 1):
+            s = s + 1
             x_t = self.trans_norm(x_t)
             tran_cls = self.trans_cls_head(x_t[:, -s, :])
-            tran_cls_ls.append(tran_cls[:,0])
-        tran_cls_ls = torch.stack(tran_cls_ls).permute(1,0)
+            tran_cls_ls.append(tran_cls[:, 0])
+            gc.collect()
+        tran_cls_ls = torch.stack(tran_cls_ls).permute(1, 0)
+        tran_cls_ls = torch.flip(tran_cls_ls, [1])
 
         return conv_cls, tran_cls_ls

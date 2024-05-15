@@ -67,7 +67,7 @@ def create_data_for_model(clim_div, today_date, forecast_hour, single):
         nysm_cats_df = pd.read_csv(nysm_cats_path)
         nysm_cats_df = nysm_cats_df[nysm_cats_df["climate_division_name"] == clim_div]
         stations = nysm_cats_df["stid"].tolist()
-        
+
     nysm_df = nysm_df[nysm_df["station"].isin(stations)]
     hrrr_df = hrrr_df[hrrr_df["station"].isin(stations)]
 
