@@ -17,7 +17,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--epochs",
         type=int,
-        default=int(15),
+        default=int(1),
         help="input epochs for training",
     )
     parser.add_argument(
@@ -49,6 +49,12 @@ if __name__ == "__main__":
         type=int,
         default=int(32),
         help="input past time steps for training",
+    )
+    parser.add_argument(
+        "--save-model",
+        action="store_true",
+        default=True,
+        help="For Saving the current Model",
     )
 
     args, unknown = parser.parse_known_args()

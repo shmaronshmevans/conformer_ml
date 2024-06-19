@@ -871,6 +871,7 @@ class Conformer(nn.Module):
         # Initialize parameters
         self.num_classes = num_classes
         self.num_features = in_chans
+        self.stations = stations
         assert depth % 3 == 0
 
         # Learnable class token
@@ -1065,32 +1066,19 @@ class Conformer(nn.Module):
         Returns:
             torch.Tensor: Output tensor (classification output) for each station.
         """
-        B = x.shape[0]
-        stations = x.shape[1]
-        seq_length = x.shape[2]
-        features = x.shape[3]
-
-        # # Check if sequence length is divisible by the number of stations
-        if seq_length % stations != 0:
-            suggested_seq_length = (seq_length // stations + 1) * stations
-            raise ValueError(
-                f"Sequence length should be divisible by the number of stations. Suggested sequence length: {suggested_seq_length.item()}"
-            )
+        # B = x.shape[0]
+        # t = x.shape[1]
+        # h, w = x.shape[2], x.shape[3]
+        # features = x.shape[4]
+        B, t, h, w, features = x.shape
 
         cls_tokens = self.cls_token.expand(-1, B, -1).transpose(
             0, 1
         )  # [batch_size, stations, features]
 
-        # Concatenate class tokens with feature embeddings
-
-        # reshape for convolution, [batch, features, station, seq_length]
-        x_station = x.permute(0, 3, 1, 2)
-        # x_t0 = x_t.permute(0,3,1,2)
-        x_station = x_station.repeat(1, 1, int(seq_length / stations), 1)
-        # x_t0 = x_t0.repeat(1, 1, int(seq_length/stations), 1)
-
         # Stem stage
-        x_base = self.maxpool(self.act1(self.bn1(self.conv1(x_station))))
+        x = x.view(B, features * t, h, w)
+        x_base = self.maxpool(self.act1(self.bn1(self.conv1(x))))
         # x_base_t = self.maxpool(self.act1(self.bn1(self.conv1(x_t0))))
 
         # 1st stage
@@ -1114,7 +1102,7 @@ class Conformer(nn.Module):
 
         # Transformer classification
         tran_cls_ls = []
-        for s in np.arange(1, stations + 1):
+        for s in np.arange(1, self.stations + 1):
             s = s + 1
             x_t = self.trans_norm(x_t)
             tran_cls = self.trans_cls_head(x_t[:, -s, :])

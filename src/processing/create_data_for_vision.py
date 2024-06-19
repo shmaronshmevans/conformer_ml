@@ -105,10 +105,6 @@ def create_data_for_model(clim_div, today_date, forecast_hour, single):
         master_df = normalize.encode(master_df, "day_of_year", 366)
 
         cols_to_carry = ["valid_time", "station"]
-        master_df.to_parquet(
-            f"/home/aevans/transformer_ml/src/data/temp_df/{today_date}/{clim_div}/{clim_div}_{station}.parquet"
-        )
-
         new_df = master_df.drop(columns=cols_to_carry)
 
         # for c in new_df.columns:

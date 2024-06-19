@@ -16,83 +16,134 @@ from torch.utils.data import DataLoader
 from processing import create_data_for_vision
 from processing import save_output
 from processing import get_time_title
+from processing import read_in_images
 import gc
+import numpy as np 
+import pandas as pd 
 
 
-class MultiStationDataset(Dataset):
-    def __init__(
-        self, dataframes, target, features, past_steps, future_steps, nysm_vars=14
-    ):
-        """
-        dataframes: list of station dataframes like in the SequenceDataset
-        target: target error
-        features: list of features for model
-        sequence_length: int
-        """
-        self.dataframes = dataframes
-        self.features = features
+# class MultiStationDataset(Dataset):
+#     def __init__(
+#         self, dataframes, target, features, past_steps, future_steps, nysm_vars=14
+#     ):
+#         """
+#         dataframes: list of station dataframes like in the SequenceDataset
+#         target: target error
+#         features: list of features for model
+#         sequence_length: int
+#         """
+#         self.dataframes = dataframes
+#         self.features = features
+#         self.target = target
+#         self.past_steps = past_steps
+#         self.future_steps = future_steps
+#         self.nysm_vars = nysm_vars
+
+#     def __len__(self):
+#         shaper = min(
+#             [
+#                 self.dataframes[i].values.shape[0]
+#                 - (self.past_steps + self.future_steps)
+#                 for i in range(len(self.dataframes))
+#             ]
+#         )
+#         return shaper
+
+#     def __getitem__(self, i):
+#         # this is the preceeding sequence_length timesteps
+#         x = torch.stack(
+#             [
+#                 torch.tensor(
+#                     dataframe[self.features].values[
+#                         i : (i + self.past_steps + self.future_steps)
+#                     ]
+#                 )
+#                 for dataframe in self.dataframes
+#             ]
+#         ).to(torch.float32)
+#         # stacking the sequences from each dataframe along a new axis, so the output is of shape (batch, stations (len(self.dataframes)), past_steps, features)
+#         y = torch.stack(
+#             [
+#                 torch.tensor(
+#                     dataframe[self.target].values[
+#                         i + self.past_steps : i + self.past_steps + self.future_steps
+#                     ]
+#                 )
+#                 for dataframe in self.dataframes
+#             ]
+#         ).to(torch.float32)
+
+#         # this is (stations, seq_len, features)
+#         x[:, -self.future_steps :, -self.nysm_vars :] = (
+#             -999.0
+#         )  # check that this is setting the right positions to this value
+
+#         # # Fetch the previous timestep x_t
+#         # if i > 0:
+#         #     x_t = torch.stack(
+#         #         [
+#         #             torch.tensor(
+#         #                 dataframe[self.features].values[
+#         #                     (i - 1) : (i + self.past_steps + self.future_steps - 1)
+#         #                 ]
+#         #             )
+#         #             for dataframe in self.dataframes
+#         #         ]
+#         #     ).to(torch.float32)
+#         #     x_t[:, -self.future_steps:, -self.nysm_vars:] = -999.0
+#         # else:
+#         #     # If i is 0, there's no previous timestep
+#         #     x_t = torch.zeros_like(x)
+
+#         return x, y
+
+
+class ImageSequenceDataset(Dataset):
+    def __init__(self, image_list, dataframe, target, sequence_length, forecast_hour, transform=None):
+        self.image_list = image_list
+        self.dataframe = dataframe
+        self.transform = transform
+        self.sequence_length = sequence_length
         self.target = target
-        self.past_steps = past_steps
-        self.future_steps = future_steps
-        self.nysm_vars = nysm_vars
+        self.forecast_hour = forecast_hour
 
     def __len__(self):
-        shaper = min(
-            [
-                self.dataframes[i].values.shape[0]
-                - (self.past_steps + self.future_steps)
-                for i in range(len(self.dataframes))
-            ]
-        )
-        return shaper
+        return len(self.image_list)
 
     def __getitem__(self, i):
-        # this is the preceeding sequence_length timesteps
-        x = torch.stack(
-            [
-                torch.tensor(
-                    dataframe[self.features].values[
-                        i : (i + self.past_steps + self.future_steps)
-                    ]
-                )
-                for dataframe in self.dataframes
-            ]
-        ).to(torch.float32)
-        # stacking the sequences from each dataframe along a new axis, so the output is of shape (batch, stations (len(self.dataframes)), past_steps, features)
-        y = torch.stack(
-            [
-                torch.tensor(
-                    dataframe[self.target].values[
-                        i + self.past_steps : i + self.past_steps + self.future_steps
-                    ]
-                )
-                for dataframe in self.dataframes
-            ]
-        ).to(torch.float32)
+        images = []
+        x_start = i
+        x_end = i + self.sequence_length
+        y_start = x_end
+        y_end = y_start + self.forecast_hour
 
-        # this is (stations, seq_len, features)
-        x[:, -self.future_steps :, -self.nysm_vars :] = (
-            -999.0
-        )  # check that this is setting the right positions to this value
+        for j in range(x_start, x_end):
+            if j < len(self.image_list):
+                img_name = self.image_list[j]
+                image = np.load(img_name).astype(np.float32)
+                image = image[:, :, 4:]
+                if self.transform:
+                    image = self.transform(image)
+                images.append(torch.tensor(image))
+            else:
+                pad_image = torch.zeros_like(images[0])
+                images.append(pad_image)
 
-        # # Fetch the previous timestep x_t
-        # if i > 0:
-        #     x_t = torch.stack(
-        #         [
-        #             torch.tensor(
-        #                 dataframe[self.features].values[
-        #                     (i - 1) : (i + self.past_steps + self.future_steps - 1)
-        #                 ]
-        #             )
-        #             for dataframe in self.dataframes
-        #         ]
-        #     ).to(torch.float32)
-        #     x_t[:, -self.future_steps:, -self.nysm_vars:] = -999.0
-        # else:
-        #     # If i is 0, there's no previous timestep
-        #     x_t = torch.zeros_like(x)
+        while len(images) < self.sequence_length:
+            pad_image = torch.zeros_like(images[0])
+            images.insert(0, pad_image)
 
-        return x, y
+        images = torch.stack(images)
+        images = images.to(torch.float32)
+
+        # Extract target values
+        y = self.dataframe[self.target].values[y_start : y_end]
+        if len(y) < self.sequence_length:
+            pad_width = (self.sequence_length - len(y), 0)
+            y = np.pad(y, (pad_width, (0, 0)), "constant", constant_values=0)
+
+        y = torch.tensor(y).to(torch.float32)
+        return images, y
 
 
 def train_model(data_loader, model, optimizer, device, epoch, loss_func):
@@ -110,7 +161,7 @@ def train_model(data_loader, model, optimizer, device, epoch, loss_func):
         # output[1] = transformer
         output = model(X)
 
-        loss = loss_func(output[1], y[:, :, -1])
+        loss = loss_func(output[1], y[:, -1, :])
         loss = loss / accum
         loss.backward()
         if (batch_idx + 1) % accum == 0:
@@ -120,6 +171,7 @@ def train_model(data_loader, model, optimizer, device, epoch, loss_func):
         # Track the total loss and the number of processed samples.
         total_loss += loss.item()
         gc.collect()
+        torch.cuda.empty_cache()
 
     # Compute the average loss for the current epoch.
     avg_loss = total_loss / num_batches
@@ -144,8 +196,9 @@ def test_model(data_loader, model, device, epoch, loss_func):
         # Forward pass to obtain model predictions.
         output = model(X)
         # Compute loss and add it to the total loss.
-        total_loss += loss_func(output[1], y[:, :, -1]).item()
+        total_loss += loss_func(output[1], y[:, -1, :]).item()
         gc.collect()
+        torch.cuda.empty_cache()
 
     # Calculate the average test loss.
     avg_loss = total_loss / num_batches
@@ -168,25 +221,21 @@ def main(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("I'm using device: ", device)
     today_date, today_date_hr = get_time_title.get_time_title(CLIM_DIV)
+
     # create data
-    df_train_ls, df_test_ls, features, stations = (
-        create_data_for_vision.create_data_for_model(
-            CLIM_DIV, today_date, forecast_hour, single
-        )
+    train_df, test_df, train_ims, test_ims, target, stations = (
+        read_in_images.create_data_for_model(CLIM_DIV)
     )
 
     # load datasets
-    train_dataset = MultiStationDataset(
-        df_train_ls, "target_error", features, past_timesteps, forecast_hour
-    )
-    test_dataset = MultiStationDataset(
-        df_test_ls, "target_error", features, past_timesteps, forecast_hour
-    )
+    train_dataset = ImageSequenceDataset(train_ims, train_df, target, past_timesteps, forecast_hour)
+    test_dataset = ImageSequenceDataset(test_ims, test_df, target, past_timesteps, forecast_hour)
+    sequence_length = int(past_timesteps + forecast_hour)
 
     # define model parameters
     ml = model2.Conformer(
         patch_size=16,
-        in_chans=len(features),
+        in_chans=800,
         stations=len(stations),
         past_timesteps=past_timesteps,
         forecast_hour=forecast_hour,
@@ -197,7 +246,7 @@ def main(
         ml.cuda()
 
     # Adam Optimizer
-    optimizer = torch.optim.Adam(ml.parameters(), lr=LEARNING_RATE)
+    optimizer = torch.optim.AdamW(ml.parameters(), lr=LEARNING_RATE)
     # MSE Loss
     loss_func = nn.MSELoss()
     # loss_func = FocalLossV3()
@@ -233,23 +282,27 @@ def main(
         #     print(f"Early stopping at epoch {ix_epoch}")
         #     break
 
-    eval_model(
+    save_output.eval_model(
         train_loader,
         test_loader,
         ml,
         device,
-        df_train_ls,
-        df_test_ls,
+        target,
+        train_df,
+        test_df,
         stations,
         today_date,
+        today_date_hr,
         CLIM_DIV,
+        forecast_hour,
+        past_timesteps
     )
     experiment.end()
 
 
 main(
     EPOCHS=5,
-    BATCH_SIZE=int(5),
+    BATCH_SIZE=int(24),
     LEARNING_RATE=7e-4,
     CLIM_DIV="Mohawk Valley",
     forecast_hour=4,
